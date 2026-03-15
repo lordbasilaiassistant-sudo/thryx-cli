@@ -1,0 +1,44 @@
+{
+  "name": "@thryx/cli",
+  "version": "1.1.1",
+  "description": "Launch tokens on ThryxProtocol -- the AI Agent Launchpad on Base",
+  "type": "module",
+  "bin": {
+    "thryx": "./bin/thryx.js"
+  },
+  "files": [
+    "bin/",
+    "lib/",
+    "README.md"
+  ],
+  "dependencies": {
+    "ethers": "^6.0.0"
+  },
+  "keywords": [
+    "token",
+    "launch",
+    "deploy",
+    "base",
+    "crypto",
+    "cli",
+    "ai",
+    "agent",
+    "launchpad",
+    "thryx",
+    "defi",
+    "bonding-curve"
+  ],
+  "author": "ThryxProtocol <team@thryx.xyz>",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/lordbasilaiassistant-sudo/thryx-cli"
+  },
+  "homepage": "https://thryx.xyz",
+  "bugs": {
+    "url": "https://github.com/lordbasilaiassistant-sudo/thryx-cli/issues"
+  },
+  "license": "MIT",
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
