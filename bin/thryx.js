@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { launch, getInfo, buy, sell, setReferrer, claimReferralFees, getProtocolStats, PROTOCOL_ADDRESS, THRYX_ADDRESS } from '../lib/protocol.js';
+import { launch, gaslessLaunch, getInfo, buy, sell, setReferrer, claimReferralFees, getProtocolStats, PROTOCOL_ADDRESS, THRYX_ADDRESS, RELAY_URL } from '../lib/protocol.js';
 
 // ── ANSI Colors (no dependencies) ───────────────────────────────────
 const c = {
@@ -30,6 +30,8 @@ function parseArgs(argv) {
       flags.with = args[++i];
     } else if (args[i] === '--json') {
       flags.json = true;
+    } else if (args[i] === '--direct') {
+      flags.direct = true;
     } else if (args[i] === '--help' || args[i] === '-h') {
       flags.help = true;
     } else if (args[i].startsWith('--')) {
@@ -43,10 +45,10 @@ function parseArgs(argv) {
 }
 
 function getPrivateKey(flags) {
-  const key = flags.key || process.env.THRYX_PRIVATE_KEY;
+  const key = flags.key || process.env.PRIVATE_KEY || process.env.EVM_PRIVATE_KEY;
   if (!key) {
     error('No private key provided.');
-    console.error(`  Use ${c.cyan}--key 0x...${c.reset} or set ${c.cyan}THRYX_PRIVATE_KEY${c.reset} env var.`);
+    console.error(`  Use ${c.cyan}--key 0x...${c.reset} or set ${c.cyan}PRIVATE_KEY${c.reset} env var.`);
     process.exit(1);
   }
   return key;
@@ -87,38 +89,56 @@ async function cmdLaunch(positional, flags) {
   const symbol = positional[2];
 
   if (!name || !symbol) {
-    error('Usage: thryx launch "Token Name" SYMBOL [--key 0x...]');
+    error('Usage: thryx launch "Token Name" SYMBOL [--key 0x...] [--direct]');
     console.error('');
     console.error(`  ${c.dim}Example:${c.reset} npx thryx launch "My Token" MYTK --key $PRIVATE_KEY`);
+    console.error(`  ${c.dim}Direct:${c.reset} npx thryx launch "My Token" MYTK --direct --key $PRIVATE_KEY`);
     process.exit(1);
   }
 
   const privateKey = getPrivateKey(flags);
+  const isDirect = !!flags.direct;
 
   banner();
-  info(`Launching "${c.bold}${name}${c.reset}" (${c.yellow}$${symbol}${c.reset}) on ThryxProtocol...`);
+  if (isDirect) {
+    info(`Launching "${c.bold}${name}${c.reset}" (${c.yellow}$${symbol}${c.reset}) on ThryxProtocol ${c.dim}(direct tx)${c.reset}...`);
+    info('Cost: gas only (~$0.01 on Base)');
+  } else {
+    info(`Launching "${c.bold}${name}${c.reset}" (${c.yellow}$${symbol}${c.reset}) on ThryxProtocol ${c.green}(gasless via relay)${c.reset}...`);
+    info('Cost: FREE -- relay pays gas. Your wallet signs off-chain only.');
+  }
   info('Supply: 1,000,000,000 tokens (80% curve, 15% LP reserve, 5% creator vested)');
-  info('Cost: gas only (~$0.01 on Base)');
   console.error('');
 
   try {
-    const result = await launch(name, symbol, privateKey);
+    const result = isDirect
+      ? await launch(name, symbol, privateKey)
+      : await gaslessLaunch(name, symbol, privateKey);
 
     divider();
-    success(`Token launched!`);
+    success(result.gasless ? 'Token launched (gasless)!' : 'Token launched!');
     console.error('');
     field('Token', `${c.bold}${c.green}${result.token || 'check tx'}${c.reset}`);
     field('Name', result.name);
     field('Symbol', `$${result.symbol}`);
     field('Deployer', result.deployer);
-    field('Tx', result.txHash);
-    field('Block', result.blockNumber);
+    if (result.gasless) {
+      field('Mode', `${c.green}Gasless${c.reset} (relay paid gas)`);
+    }
+    field('Tx', result.txHash || 'pending');
+    if (result.blockNumber) {
+      field('Block', result.blockNumber);
+    }
     if (result.spotPrice) {
       field('Spot Price', `${result.spotPrice} THRYX/token`);
     }
-    field('Explorer', result.explorer);
+    if (result.explorer) {
+      field('Explorer', result.explorer);
+    }
     console.error('');
-    info(`Share your token: ${c.cyan}npx thryx info ${result.token}${c.reset}`);
+    if (result.token) {
+      info(`Share your token: ${c.cyan}npx thryx info ${result.token}${c.reset}`);
+    }
     divider();
     console.error('');
 
@@ -257,7 +277,7 @@ async function cmdSell(positional, flags) {
   const privateKey = getPrivateKey(flags);
 
   banner();
-  info(`Selling ${c.yellow}${amount}${c.reset} of ${c.cyan}${tokenAddress.slice(0, 10)}...${c.reset} for THRYX...`);
+  info(`Selling ${c.yellow}${amount}${c.reset} of ${c.cyan}${tokenAddress.slice(0, 10)}...${c.reset} for ETH...`);
   console.error('');
 
   try {
@@ -361,14 +381,14 @@ async function cmdClaimReferral(positional, flags) {
 
 async function cmdStats(positional, flags) {
   banner();
-  info('Fetching ThryxProtocol v2.3 stats...');
+  info('Fetching ThryxProtocol v2.4 Diamond stats...');
   console.error('');
 
   try {
     const result = await getProtocolStats();
 
     divider();
-    field('Protocol', `${c.bold}${c.magenta}ThryxProtocol v2.3${c.reset}`);
+    field('Protocol', `${c.bold}${c.magenta}ThryxProtocol v2.4 Diamond${c.reset}`);
     field('Contract', result.protocol);
     console.error('');
     field('Tokens Launched', result.launched);
@@ -401,31 +421,35 @@ function showHelp() {
   console.error(`${c.bold}  Usage:${c.reset} thryx <command> [options]`);
   console.error('');
   console.error(`${c.bold}  Commands:${c.reset}`);
-  console.error(`    ${c.green}launch${c.reset}          "Name" SYMBOL       Launch a new token on ThryxProtocol`);
+  console.error(`    ${c.green}launch${c.reset}          "Name" SYMBOL       Launch a new token (gasless by default)`);
   console.error(`    ${c.green}info${c.reset}            <token_address>     Query token and curve info`);
-  console.error(`    ${c.green}buy${c.reset}             <token> <amount>    Buy tokens (ETH or THRYX)`);
-  console.error(`    ${c.green}sell${c.reset}            <token> [amount]    Sell tokens for THRYX`);
-  console.error(`    ${c.green}set-referrer${c.reset}    <token> <referrer>  Set referrer for a token (v2.3)`);
-  console.error(`    ${c.green}claim-referral${c.reset}                      Claim accumulated referral fees (v2.3)`);
-  console.error(`    ${c.green}stats${c.reset}                               Protocol stats incl. burns & graduation (v2.3)`);
+  console.error(`    ${c.green}buy${c.reset}             <token> <amount>    Buy tokens with ETH (or THRYX)`);
+  console.error(`    ${c.green}sell${c.reset}            <token> [amount]    Sell tokens for ETH`);
+  console.error(`    ${c.green}set-referrer${c.reset}    <token> <referrer>  Set referrer for a token (v2.4)`);
+  console.error(`    ${c.green}claim-referral${c.reset}                      Claim accumulated referral fees (v2.4)`);
+  console.error(`    ${c.green}stats${c.reset}                               Protocol stats incl. burns & graduation (v2.4)`);
   console.error('');
   console.error(`${c.bold}  Options:${c.reset}`);
-  console.error(`    ${c.cyan}--key${c.reset} <0x...>             Private key (or set THRYX_PRIVATE_KEY env)`);
+  console.error(`    ${c.cyan}--key${c.reset} <0x...>             Private key (or set PRIVATE_KEY env)`);
   console.error(`    ${c.cyan}--with${c.reset} <eth|thryx>        Payment asset for buys (default: eth)`);
+  console.error(`    ${c.cyan}--direct${c.reset}                  Launch via direct tx instead of gasless relay`);
   console.error(`    ${c.cyan}--json${c.reset}                    Output JSON to stdout (for AI agents)`);
   console.error(`    ${c.cyan}--help${c.reset}                    Show this help`);
   console.error('');
   console.error(`${c.bold}  Examples:${c.reset}`);
-  console.error(`    ${c.dim}# Launch a token${c.reset}`);
+  console.error(`    ${c.dim}# Launch a token (gasless -- FREE, relay pays gas)${c.reset}`);
   console.error(`    npx thryx launch "My Token" MYTK --key $PRIVATE_KEY`);
+  console.error('');
+  console.error(`    ${c.dim}# Launch a token (direct tx -- you pay gas)${c.reset}`);
+  console.error(`    npx thryx launch "My Token" MYTK --direct --key $PRIVATE_KEY`);
   console.error('');
   console.error(`    ${c.dim}# Check token info${c.reset}`);
   console.error(`    npx thryx info 0x1234...abcd`);
   console.error('');
-  console.error(`    ${c.dim}# Buy with 0.001 ETH${c.reset}`);
+  console.error(`    ${c.dim}# Buy with 0.001 ETH (simple interface)${c.reset}`);
   console.error(`    npx thryx buy 0x1234...abcd 0.001 --with eth`);
   console.error('');
-  console.error(`    ${c.dim}# Sell all tokens${c.reset}`);
+  console.error(`    ${c.dim}# Sell all tokens for ETH${c.reset}`);
   console.error(`    npx thryx sell 0x1234...abcd all`);
   console.error('');
   console.error(`    ${c.dim}# Set a referrer for your token${c.reset}`);
@@ -440,9 +464,18 @@ function showHelp() {
   console.error(`    ${c.dim}# JSON output (for AI agents / scripts)${c.reset}`);
   console.error(`    npx thryx launch "AI Token" AITK --json --key $KEY`);
   console.error('');
-  console.error(`${c.bold}  Protocol:${c.reset} ${c.dim}${PROTOCOL_ADDRESS} (v2.3)${c.reset}`);
+  console.error(`${c.bold}  Features:${c.reset}`);
+  console.error(`    ${c.dim}Gasless launches via metaLaunch() — sign off-chain, relay pays gas${c.reset}`);
+  console.error(`    ${c.dim}Simple buy/sell — send ETH to buy, sell for ETH. Protocol handles THRYX routing.${c.reset}`);
+  console.error(`    ${c.dim}Real THRYX volume on every trade via V4 Doppler pool${c.reset}`);
+  console.error(`    ${c.dim}Dynamic graduation threshold (ETH-denominated)${c.reset}`);
+  console.error(`    ${c.dim}Paymaster sponsors gas for new users${c.reset}`);
+  console.error(`    ${c.dim}Relay: https://thryx-relay.thryx.workers.dev${c.reset}`);
+  console.error('');
+  console.error(`${c.bold}  Protocol:${c.reset} ${c.dim}${PROTOCOL_ADDRESS} (v2.4 Diamond)${c.reset}`);
   console.error(`${c.bold}  THRYX:${c.reset}    ${c.dim}${THRYX_ADDRESS}${c.reset}`);
   console.error(`${c.bold}  Network:${c.reset}  ${c.dim}Base (Chain ID 8453)${c.reset}`);
+  console.error(`${c.bold}  Relay:${c.reset}    ${c.dim}https://thryx-relay.thryx.workers.dev${c.reset}`);
   console.error(`${c.bold}  Docs:${c.reset}     ${c.dim}https://thryx.xyz${c.reset}`);
   console.error('');
 }
